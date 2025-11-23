@@ -66,6 +66,11 @@
   { milestone-ids: (list 20 uint) }
 )
 
+(define-map pairing-feedback
+  { pairing-id: uint, from-user-id: uint, to-user-id: uint }
+  { rating: uint }
+)
+
 (define-public (register-user (native-lang (string-ascii 20)) (learning-lang (string-ascii 20)) (proficiency uint))
   (let
     (
@@ -263,6 +268,38 @@
   )
 )
 
+(define-public (submit-feedback (pairing-id uint) (to-user-id uint) (rating uint))
+  (let
+    (
+      (caller-user-data (unwrap! (get-user-by-wallet tx-sender) ERR_NOT_FOUND))
+      (caller-user-id (get user-id caller-user-data))
+      (pairing-data (unwrap! (map-get? language-pairings { pairing-id: pairing-id }) ERR_NOT_FOUND))
+      (feedback-key { pairing-id: pairing-id, from-user-id: caller-user-id, to-user-id: to-user-id })
+    )
+    (asserts!
+      (or
+        (is-eq (get user1-id pairing-data) caller-user-id)
+        (is-eq (get user2-id pairing-data) caller-user-id)
+      )
+      ERR_UNAUTHORIZED
+    )
+    (asserts! (not (is-eq caller-user-id to-user-id)) ERR_INVALID_INPUT)
+    (asserts!
+      (or
+        (is-eq (get user1-id pairing-data) to-user-id)
+        (is-eq (get user2-id pairing-data) to-user-id)
+      )
+      ERR_INVALID_INPUT
+    )
+    (asserts! (>= rating u1) ERR_INVALID_INPUT)
+    (asserts! (<= rating u5) ERR_INVALID_INPUT)
+    (asserts! (is-none (map-get? pairing-feedback feedback-key)) ERR_ALREADY_EXISTS)
+    (map-set pairing-feedback feedback-key { rating: rating })
+    (update-user-reputation to-user-id (feedback-points rating))
+    (ok true)
+  )
+)
+
 (define-read-only (get-user (user-id uint))
   (map-get? users { user-id: user-id })
 )
@@ -291,6 +328,10 @@
 
 (define-read-only (get-pairing-milestones (pairing-id uint))
   (default-to { milestone-ids: (list) } (map-get? pairing-milestones { pairing-id: pairing-id }))
+)
+
+(define-read-only (get-feedback (pairing-id uint) (from-user-id uint) (to-user-id uint))
+  (map-get? pairing-feedback { pairing-id: pairing-id, from-user-id: from-user-id, to-user-id: to-user-id })
 )
 
 (define-read-only (get-total-users)
@@ -337,6 +378,19 @@
       (merge user-data { total-milestones: (+ (get total-milestones user-data) u1) })
     )
     false
+  )
+)
+
+(define-private (feedback-points (rating uint))
+  (if (>= rating u5)
+    u15
+    (if (>= rating u4)
+      u10
+      (if (>= rating u3)
+        u5
+        u0
+      )
+    )
   )
 )
 
