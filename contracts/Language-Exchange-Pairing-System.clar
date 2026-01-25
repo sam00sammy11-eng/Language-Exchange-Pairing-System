@@ -10,6 +10,20 @@
 (define-data-var next-milestone-id uint u1)
 (define-data-var total-rewards-distributed uint u0)
 
+(define-constant BLOCKS_PER_DAY u144)
+(define-constant STREAK_BONUS_THRESHOLD u7)
+(define-constant STREAK_BONUS_POINTS u25)
+
+(define-map user-streaks
+  { user-id: uint }
+  {
+    current-streak: uint,
+    longest-streak: uint,
+    last-session-block: uint,
+    total-streak-bonuses: uint
+  }
+)
+
 (define-map users 
   { user-id: uint }
   {
@@ -350,6 +364,60 @@
   (var-get total-rewards-distributed)
 )
 
+(define-read-only (get-user-streak (user-id uint))
+  (default-to 
+    { current-streak: u0, longest-streak: u0, last-session-block: u0, total-streak-bonuses: u0 }
+    (map-get? user-streaks { user-id: user-id })
+  )
+)
+
+(define-public (check-in-session (pairing-id uint))
+  (let
+    (
+      (pairing-data (unwrap! (map-get? language-pairings { pairing-id: pairing-id }) ERR_NOT_FOUND))
+      (caller-user-data (unwrap! (get-user-by-wallet tx-sender) ERR_NOT_FOUND))
+      (user-id (get user-id caller-user-data))
+      (current-block stacks-block-height)
+      (streak-data (get-user-streak user-id))
+      (last-block (get last-session-block streak-data))
+      (blocks-since-last (- current-block last-block))
+    )
+    (asserts! 
+      (or 
+        (is-eq (get user1-id pairing-data) user-id)
+        (is-eq (get user2-id pairing-data) user-id)
+      )
+      ERR_UNAUTHORIZED
+    )
+    (asserts! (is-eq (get status pairing-data) "active") ERR_INVALID_INPUT)
+    
+    (let
+      (
+        (new-streak (calculate-new-streak last-block current-block (get current-streak streak-data)))
+        (new-longest (if (> new-streak (get longest-streak streak-data)) new-streak (get longest-streak streak-data)))
+        (earned-bonus (if (and (is-eq (mod new-streak STREAK_BONUS_THRESHOLD) u0) (> new-streak u0)) u1 u0))
+      )
+      (map-set user-streaks
+        { user-id: user-id }
+        {
+          current-streak: new-streak,
+          longest-streak: new-longest,
+          last-session-block: current-block,
+          total-streak-bonuses: (+ (get total-streak-bonuses streak-data) earned-bonus)
+        }
+      )
+      
+      (if (> earned-bonus u0)
+        (begin
+          (update-user-reputation user-id STREAK_BONUS_POINTS)
+          (ok { streak: new-streak, bonus-earned: true })
+        )
+        (ok { streak: new-streak, bonus-earned: false })
+      )
+    )
+  )
+)
+
 (define-private (update-user-pairings (user-id uint) (pairing-id uint))
   (let
     (
@@ -402,5 +470,23 @@
       (merge user-data { reputation-score: (+ (get reputation-score user-data) points) })
     )
     false
+  )
+)
+
+(define-private (calculate-new-streak (last-block uint) (current-block uint) (current-streak uint))
+  (if (is-eq last-block u0)
+    u1
+    (let
+      (
+        (blocks-diff (- current-block last-block))
+      )
+      (if (<= blocks-diff BLOCKS_PER_DAY)
+        current-streak
+        (if (<= blocks-diff (* BLOCKS_PER_DAY u2))
+          (+ current-streak u1)
+          u1
+        )
+      )
+    )
   )
 )
